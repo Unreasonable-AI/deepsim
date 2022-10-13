@@ -1,0 +1,5 @@
+# Modified from original to get rid of Sonnet
+tensorflow-gpu
+matplotlib
+absl-py
+numpy
