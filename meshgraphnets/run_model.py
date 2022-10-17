@@ -34,6 +34,7 @@ flags.DEFINE_enum('mode', 'train', ['train', 'eval'],
                   'Train model, or run evaluation.')
 flags.DEFINE_enum('model', None, ['cfd', 'cloth'],
                   'Select model to run.')
+flags.DEFINE_string('restore_dir', None, 'Directory from which restore checkpoint')
 flags.DEFINE_string('checkpoint_dir', None, 'Directory to save checkpoint')
 flags.DEFINE_string('dataset_dir', None, 'Directory to load dataset from.')
 flags.DEFINE_string('rollout_path', None,
@@ -53,7 +54,6 @@ PARAMETERS = {
 }
 
 def learner(model, params, strategy=None) -> None:
-    print(tf.distribute.get_replica_context().replica_id_in_sync_group)
     ds = dataset.load_dataset(FLAGS.dataset_dir, 'train')
     ds = dataset.add_targets(ds, [params['field']], add_history=params['history'])
     ds = dataset.split_and_preprocess(ds, noise_field=params['field'],
@@ -70,29 +70,34 @@ def learner(model, params, strategy=None) -> None:
                         decay_rate=0.1,
                         alpha_final=1e-6)
 
-    if strategy is not None:
-        ds = strategy.experimental_distribute_dataset(ds)
-        with strategy.scope():
-            model.add_optimizer(**optim_kwargs)
-            ckpt = tf.train.Checkpoint(
-                model=model,
-                optimizer=model.optimizer
-            )
-            ckpt_manager = tf.train.CheckpointManager(
-                    ckpt, FLAGS.checkpoint_dir, max_to_keep=10
-                )
-    else:
+    def _setup_ckpt_and_optim():
         model.add_optimizer(**optim_kwargs)
         ckpt = tf.train.Checkpoint(
                 model=model,
                 optimizer=model.optimizer
             )
         ckpt_manager = tf.train.CheckpointManager(
-                ckpt, FLAGS.checkpoint_dir, max_to_keep=10
-            )
+                    ckpt, FLAGS.checkpoint_dir, max_to_keep=10
+                )
+        if FLAGS.restore_dir is not None:
+            # Restore latest checkpoint
+            logging.info('Restoring from checkpoint', FLAGS.restore_dir)
+            ckpt.restore(ckpt_manager.latest_checkpoint)
+
+        return ckpt, ckpt_manager
+
+
+    if strategy is not None:
+        ds = strategy.experimental_distribute_dataset(ds)
+        with strategy.scope():
+            ckpt, ckpt_manager = _setup_ckpt_and_optim()
+            
+    else:
+        ckpt, ckpt_manager = _setup_ckpt_and_optim()
 
     start = time.time()
     save_checkpoint_secs = 600
+    factor = 1
     # TODO: adjust steps for batch size > 1
     for step, inputs in enumerate(ds):
         if step < (1000 // n_gpus):
@@ -110,7 +115,9 @@ def learner(model, params, strategy=None) -> None:
         if step == (FLAGS.num_training_steps // n_gpus - 1):
             break
         # TODO: maybe save on a different basis
-        if ((time.time() - start) % save_checkpoint_secs) == 0:
+        if ((time.time() - start) > (factor * save_checkpoint_secs)):
+            logging.info('Saving checkpoint')
+            factor += 1
             ckpt_manager.save()
     logging.info('Training complete')
 
@@ -146,7 +153,10 @@ def get_model(params):
         num_layers=2,
         message_passing_steps=15)
     model = params['model'].Model(learned_model, log_dir=FLAGS.checkpoint_dir,
-                                  # TODO: update to allow for batch size > 1
+                                  # TODO: update 
+                                  # global_batch_size, max_accumulations,
+                                  # to allow for batch size > 1
+                                  global_batch_size=get_num_gpus(),
                                   max_accumulations=10**6 // get_num_gpus(),
                                   save_summaries_steps=FLAGS.save_summaries_steps)
     return model

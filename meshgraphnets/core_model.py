@@ -181,8 +181,10 @@ class EncodeProcessDecode(tf.keras.models.Model):
 
 
 class BaseModel(tf.keras.models.Model):
-  def __init__(self, log_dir=None, save_summaries_steps=10000, name='BaseModel'):
+  def __init__(self, log_dir=None, save_summaries_steps=10000, 
+                global_batch_size = 1, name='BaseModel'):
     super(BaseModel, self).__init__(name=name)
+    self.global_batch_size = global_batch_size
     self.save_summaries = log_dir is not None
     if self.save_summaries:
       self.writers = {'train': tf.summary.create_file_writer(f'{log_dir}/train'),
@@ -210,7 +212,7 @@ class BaseModel(tf.keras.models.Model):
       ):
         with self.writers['train'].as_default():
           with tf.name_scope(''):
-            tf.summary.scalar('loss', loss, step=step)
+            tf.summary.scalar(f'loss', loss, step=step)
 
 
   @tf.function
@@ -232,25 +234,20 @@ class BaseModel(tf.keras.models.Model):
     self._maybe_add_summary(loss)
     return loss
       
-
   @tf.function
   def distributed_update_norm(self, inputs):
     per_replica_losses = self.strategy.run(self._dist_update_norm, args=(inputs,))
     loss = self.strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
                          axis=None)
-    if tf.distribute.get_replica_context().replica_id_in_sync_group == 0:
-      self._maybe_add_summary(loss)
+    self._maybe_add_summary(loss)
     return loss
-    
 
-  
   def _train_step(self, inputs):
     with tf.GradientTape() as tape:
       loss_val = self.loss(inputs)
     variables = self.trainable_variables
     gradients = tape.gradient(loss_val, variables)
     self.optimizer.apply_gradients(zip(gradients, variables))
-    # self.sync_normalizers()
     return loss_val
 
   def _dist_train_step(self, inputs):
@@ -272,17 +269,9 @@ class BaseModel(tf.keras.models.Model):
     per_replica_losses = self.strategy.run(self._dist_train_step, args=(inputs,))
     loss = self.strategy.reduce(tf.distribute.ReduceOp.SUM, per_replica_losses,
                          axis=None)
-    if tf.distribute.get_replica_context().replica_id_in_sync_group == 0:
-      self._maybe_add_summary(loss)
+    self._maybe_add_summary(loss)
 
     return loss
-
-  def sync_normalizers(self):
-    for layer in self.layers:
-      if isinstance(layer, Normalizer):
-        layer.sync_variables()
-
-
 
 
 

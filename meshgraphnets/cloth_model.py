@@ -26,9 +26,15 @@ from meshgraphnets.common import NodeType
 class Model(core_model.BaseModel):
   """Model for static cloth simulation."""
 
-  def __init__(self, learned_model, log_dir=None, save_summaries_steps=10000, 
+  def __init__(self, learned_model, 
+  log_dir=None, save_summaries_steps=10000, 
+  global_batch_size=1,
   max_accumulations=10**6, name='Model'):
-    super(Model, self).__init__(name=name, log_dir=log_dir, save_summaries_steps=save_summaries_steps)
+    super(Model, self).__init__(
+      name=name, 
+      log_dir=log_dir, 
+      save_summaries_steps=save_summaries_steps,
+      global_batch_size = global_batch_size)
     self._learned_model = learned_model
     self._output_normalizer = normalization.Normalizer(
         size=3, 
@@ -107,9 +113,10 @@ class Model(core_model.BaseModel):
     # # graph_loss_b = sum_{i=1}^{nodes_in_batch_b}(error_i * mask_i) / nodes_in_batch_b
     # # loss = graph_loss_b / batch_size
     # # later loss will be summed over all batches to get total_loss
+    tf.print(self.strategy.num_replicas_in_sync)
     loss = tf.nn.compute_average_loss(
       [tf.reduce_mean(error[loss_mask])], 
-      global_batch_size=self.strategy.num_replicas_in_sync)
+      global_batch_size=self.global_batch_size)
 
     # Average error across all graphs in batch
     # This will be roughly the same if the meshes in the dataset are similar
