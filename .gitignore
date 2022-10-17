@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+
+notebooks/
+archive/
+*.svn
+script.sh
